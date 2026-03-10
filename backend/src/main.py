@@ -2,7 +2,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Amazon Nova Hackathon API")
+app = FastAPI(
+    title="Amazon Nova Hackathon API",
+    description="AI agent API built with Amazon Bedrock AgentCore and Nova models",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # CORS configuration for Next.js frontend
 app.add_middleware(
@@ -25,8 +31,14 @@ class ChatResponse(BaseModel):
 async def root():
     return {"message": "Amazon Nova Hackathon API"}
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, summary="Chat with AI Agent", description="Send a prompt to the AI agent and receive a response")
 async def chat(request: ChatRequest):
+    """
+    Chat endpoint that processes user prompts through the AgentCore agent.
+    
+    - **prompt**: The user's message/question
+    - **user_id**: Optional user identifier for session management
+    """
     # TODO: Call AgentCore agent
     return ChatResponse(
         response="Agent response will go here",
