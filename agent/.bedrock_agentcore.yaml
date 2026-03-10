@@ -1,0 +1,62 @@
+default_agent: MyFirstAgent_Agent
+agents:
+  MyFirstAgent_Agent:
+    name: MyFirstAgent_Agent
+    language: python
+    node_version: null
+    entrypoint: C:\Users\hp\Desktop\MyFirstAgent\src\main.py
+    deployment_type: direct_code_deploy
+    runtime_type: PYTHON_3_10
+    platform: linux/amd64
+    container_runtime: null
+    source_path: C:\Users\hp\Desktop\MyFirstAgent\src
+    aws:
+      execution_role: arn:aws:iam::954672827101:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-f1e34e1577
+      execution_role_auto_create: false
+      account: '954672827101'
+      region: us-east-1
+      ecr_repository: null
+      ecr_auto_create: false
+      s3_path: s3://bedrock-agentcore-codebuild-sources-954672827101-us-east-1
+      s3_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+      lifecycle_configuration:
+        idle_runtime_session_timeout: 900
+        max_lifetime: 3600
+    bedrock_agentcore:
+      agent_id: MyFirstAgent_Agent-fcy13o4Lf6
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:954672827101:runtime/MyFirstAgent_Agent-fcy13o4Lf6
+      agent_session_id: cada54af-a609-43b7-a367-a18d91736aa0
+    codebuild:
+      project_name: null
+      execution_role: null
+      source_bucket: null
+    memory:
+      mode: STM_ONLY
+      memory_id: null
+      memory_arn: null
+      memory_name: null
+      event_expiry_days: 30
+      first_invoke_memory_check_done: false
+      was_created_by_toolkit: false
+    identity:
+      credential_providers: []
+      workload: null
+    aws_jwt:
+      enabled: false
+      audiences: []
+      signing_algorithm: ES384
+      issuer_url: null
+      duration_seconds: 300
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
+    api_key_env_var_name: null
+    api_key_credential_provider_name: null
+    is_generated_by_agentcore_create: true
