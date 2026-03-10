@@ -23,7 +23,9 @@ PagerMind is an autonomous incident response system that uses a multi-agent arch
 
 ### Agent Workflow
 
-<img src="docs/images/agent-workflow.png" alt="PagerMind Agent Workflow" width="500"/>
+<p align="center">
+  <img src="docs/images/agent-workflow.png" alt="PagerMind Agent Workflow" width="500"/>
+</p>
 
 The system follows a structured workflow:
 1. **Monitoring** → Continuous CloudWatch metrics polling
