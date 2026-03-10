@@ -844,3 +844,559 @@ class ValidationContext:
 }
 ```
 
+
+
+## Deployment Architecture
+
+### Infrastructure as Code
+
+**Tool**: AWS CDK (TypeScript)
+
+**Stack Structure**:
+```
+pagermind-infrastructure/
+├── lib/
+│   ├── network-stack.ts          # VPC, subnets, security groups
+│   ├── compute-stack.ts           # ECS cluster, services, task definitions
+│   ├── data-stack.ts              # DynamoDB tables
+│   ├── messaging-stack.ts         # SQS queues
+│   ├── observability-stack.ts    # CloudWatch, X-Ray
+│   ├── agent-stack.ts             # Bedrock AgentCore configuration
+│   └── dashboard-stack.ts         # Frontend hosting (S3 + CloudFront)
+├── bin/
+│   └── pagermind.ts               # CDK app entry point
+└── cdk.json
+```
+
+**Key Resources**:
+
+1. **VPC and Networking**:
+   - VPC with public and private subnets across 2 AZs
+   - NAT Gateway for private subnet internet access
+   - Security groups for ECS tasks and ALB
+
+2. **ECS Cluster**:
+   - Fargate cluster: `pagermind-cluster`
+   - 3 ECS services (checkout, inventory, payment)
+   - Task definitions with 2 revisions each (v1 working, v2 broken)
+   - Application Load Balancer with target groups
+
+3. **DynamoDB Tables**:
+   - Orders (with CustomerIndex GSI)
+   - Inventory
+   - AuditLog
+   - AgentState
+
+4. **SQS Queue**:
+   - OrderQueue (standard queue)
+
+5. **CloudWatch**:
+   - Log groups for each service
+   - Custom metric namespace
+   - Alarms for error rate thresholds
+
+6. **X-Ray**:
+   - Tracing enabled on all ECS tasks
+   - Service map configuration
+
+7. **Bedrock AgentCore**:
+   - Agent definitions for Triage, Diagnosis, Fix, Validation
+   - Orchestrator configuration
+   - IAM roles for agent execution
+
+### Deployment Process
+
+**Prerequisites**:
+- AWS CLI configured with credentials
+- AWS CDK installed (`npm install -g aws-cdk`)
+- Docker installed (for building container images)
+
+**Deployment Steps**:
+```bash
+# 1. Clone repository
+git clone https://github.com/ritwikareddykancharla/amazon-nova-hackathon.git
+cd amazon-nova-hackathon
+
+# 2. Install dependencies
+cd infrastructure
+npm install
+
+# 3. Bootstrap CDK (first time only)
+cdk bootstrap
+
+# 4. Build and push container images
+cd ../services
+./build-and-push.sh
+
+# 5. Deploy infrastructure
+cd ../infrastructure
+cdk deploy --all
+
+# 6. Deploy frontend
+cd ../frontend
+npm install
+npm run build
+aws s3 sync out/ s3://pagermind-dashboard-bucket/
+```
+
+**Outputs**:
+- ALB URL: `http://pagermind-alb-123456789.us-east-1.elb.amazonaws.com`
+- Dashboard URL: `https://dashboard.pagermind.example.com`
+- ECS Cluster: `pagermind-cluster`
+- DynamoDB Tables: `Orders`, `Inventory`, `AuditLog`, `AgentState`
+
+
+## Security Considerations
+
+### IAM Roles and Policies
+
+**ECS Task Execution Role**:
+- Permissions: Pull images from ECR, write logs to CloudWatch
+
+**ECS Task Role** (per service):
+- Checkout Service: DynamoDB (Orders), SQS (OrderQueue), X-Ray
+- Inventory Service: DynamoDB (Inventory), X-Ray
+- Payment Service: X-Ray
+
+**Agent Execution Role**:
+- Bedrock: Invoke Nova 2 Lite model
+- CloudWatch: Read logs and metrics
+- X-Ray: Read traces
+- ECS: Describe services, update services, describe task definitions
+- DynamoDB: Read/write AuditLog and AgentState
+- GitHub: Create pull requests (via GitHub token in Secrets Manager)
+- Slack: Send messages (via Slack token in Secrets Manager)
+
+### Secrets Management
+
+**AWS Secrets Manager**:
+- `pagermind/github-token`: GitHub personal access token for PR creation
+- `pagermind/slack-webhook`: Slack webhook URL for notifications
+
+**Access Pattern**:
+```python
+import boto3
+
+secrets_client = boto3.client('secretsmanager')
+github_token = secrets_client.get_secret_value(SecretId='pagermind/github-token')['SecretString']
+```
+
+### Network Security
+
+**Security Groups**:
+- ALB Security Group: Allow inbound 80/443 from 0.0.0.0/0
+- ECS Task Security Group: Allow inbound from ALB security group only
+- Service-to-service communication: Allow within VPC
+
+**VPC Configuration**:
+- Public subnets: ALB only
+- Private subnets: ECS tasks (no direct internet access)
+- NAT Gateway: For outbound internet access (GitHub, Slack APIs)
+
+### Data Encryption
+
+- **At Rest**: All DynamoDB tables encrypted with AWS managed keys
+- **In Transit**: TLS 1.3 for all HTTPS connections
+- **Logs**: CloudWatch Logs encrypted with KMS
+
+### Least Privilege Principle
+
+- Each agent has minimal permissions required for its function
+- No agent can modify infrastructure (read-only except for ECS service updates)
+- Audit log is append-only (no delete permissions)
+
+
+## Monitoring and Observability
+
+### CloudWatch Dashboards
+
+**PagerMind Operations Dashboard**:
+- Service health metrics (error rate, latency, request count)
+- Agent workflow state (current agent, incidents in progress)
+- ECS task health (running tasks, CPU/memory utilization)
+- DynamoDB table metrics (read/write capacity, throttles)
+
+**Metrics to Monitor**:
+- `PagerMind/Services/ErrorCount`
+- `PagerMind/Services/RequestCount`
+- `PagerMind/Services/Latency`
+- `PagerMind/Agents/WorkflowDuration`
+- `PagerMind/Agents/IncidentsResolved`
+- `PagerMind/Agents/EscalationsToHuman`
+
+### CloudWatch Alarms
+
+**Critical Alarms**:
+- Error rate > 20% for 2 consecutive periods (1 minute each)
+- Latency p99 > 5000ms for 2 consecutive periods
+- ECS task count < 1 (service down)
+- Agent workflow duration > 10 minutes (timeout)
+
+**Alarm Actions**:
+- SNS topic notification
+- Slack notification via Lambda
+
+### X-Ray Service Map
+
+**Visualization**:
+- Shows dependencies between services
+- Highlights error rates and latency per service
+- Identifies bottlenecks in the request flow
+
+**Access**:
+- AWS Console: X-Ray → Service Map
+- Dashboard: Embedded X-Ray service map widget
+
+### Logging Strategy
+
+**Log Levels**:
+- INFO: Normal operations (request received, order completed)
+- WARN: Recoverable errors (retry attempts, degraded performance)
+- ERROR: Unrecoverable errors (payment failed, database timeout)
+
+**Log Retention**:
+- CloudWatch Logs: 7 days (cost optimization)
+- Audit Log (DynamoDB): Indefinite (compliance requirement)
+
+**Log Analysis**:
+- CloudWatch Logs Insights for ad-hoc queries
+- Diagnosis Agent queries logs programmatically
+
+
+## Testing Strategy
+
+### Unit Tests
+
+**Agent Logic Tests**:
+```python
+# test_triage_agent.py
+def test_should_create_incident_when_error_rate_exceeds_threshold():
+    metrics = MetricData(error_count=15, request_count=100, current_latency=200, baseline_latency=200)
+    assert should_create_incident(metrics) == True
+
+def test_should_not_create_incident_when_error_rate_below_threshold():
+    metrics = MetricData(error_count=5, request_count=100, current_latency=200, baseline_latency=200)
+    assert should_create_incident(metrics) == False
+
+# test_fix_agent.py
+def test_evidence_validation_passes_when_all_criteria_met():
+    evidence = create_valid_evidence()
+    result = validate_evidence(evidence)
+    assert result.approved == True
+    assert all(result.criteria.values())
+
+def test_evidence_validation_fails_when_criterion_missing():
+    evidence = create_evidence_with_missing_deployment()
+    result = validate_evidence(evidence)
+    assert result.approved == False
+    assert result.criteria['criterion_1'] == False
+```
+
+**Service Tests**:
+```python
+# test_checkout_service.py
+@pytest.mark.asyncio
+async def test_checkout_success():
+    response = await client.post("/api/checkout", json={
+        "customer_id": "cust-123",
+        "product_id": "prod-456",
+        "quantity": 2,
+        "payment_method": "credit_card"
+    })
+    assert response.status_code == 200
+    assert "order_id" in response.json()
+
+@pytest.mark.asyncio
+async def test_checkout_fails_when_insufficient_stock():
+    # Mock inventory service to return low stock
+    response = await client.post("/api/checkout", json={
+        "customer_id": "cust-123",
+        "product_id": "prod-456",
+        "quantity": 1000,
+        "payment_method": "credit_card"
+    })
+    assert response.status_code == 400
+    assert "Insufficient stock" in response.json()["detail"]
+```
+
+### Integration Tests
+
+**End-to-End Workflow Test**:
+```python
+@pytest.mark.integration
+async def test_incident_detection_to_resolution():
+    # 1. Deploy v2 (broken version)
+    deploy_task_definition("checkout-service", "v2")
+    
+    # 2. Generate traffic to trigger errors
+    for _ in range(100):
+        await client.post("/api/checkout", json=test_order)
+    
+    # 3. Wait for Triage Agent to detect incident
+    incident = await wait_for_incident_detection(timeout=120)
+    assert incident is not None
+    assert incident.severity in ["HIGH", "CRITICAL"]
+    
+    # 4. Wait for Diagnosis Agent to identify root cause
+    diagnosis = await wait_for_diagnosis(incident.id, timeout=180)
+    assert "deployment" in diagnosis.root_cause_hypothesis.lower()
+    
+    # 5. Wait for Fix Agent to execute rollback
+    remediation = await wait_for_remediation(incident.id, timeout=240)
+    assert remediation.action_taken == "rollback"
+    
+    # 6. Wait for Validation Agent to verify recovery
+    validation = await wait_for_validation(incident.id, timeout=360)
+    assert validation.incident_resolved == True
+    assert validation.pr_url is not None
+    
+    # 7. Verify metrics recovered
+    metrics = get_current_metrics("checkout-service")
+    assert metrics.error_rate < 0.02
+    assert metrics.p99_latency < 500
+```
+
+### Load Testing
+
+**Scenario**: Simulate realistic traffic patterns
+
+**Tool**: Locust or k6
+
+**Test Script**:
+```python
+from locust import HttpUser, task, between
+
+class CheckoutUser(HttpUser):
+    wait_time = between(1, 3)
+    
+    @task
+    def checkout(self):
+        self.client.post("/api/checkout", json={
+            "customer_id": f"cust-{random.randint(1, 1000)}",
+            "product_id": f"prod-{random.randint(1, 100)}",
+            "quantity": random.randint(1, 5),
+            "payment_method": "credit_card"
+        })
+```
+
+**Load Profile**:
+- Ramp up: 0 to 100 users over 2 minutes
+- Sustained: 100 users for 10 minutes
+- Ramp down: 100 to 0 users over 2 minutes
+
+**Success Criteria**:
+- Error rate < 1% under normal load
+- p99 latency < 500ms under normal load
+- System recovers within 8 minutes after deploying v2
+
+
+## Demo Execution Plan
+
+### Pre-Demo Setup (Day 6)
+
+1. **Deploy Infrastructure**:
+   - Run `cdk deploy --all`
+   - Verify all services are healthy
+   - Verify dashboard is accessible
+
+2. **Seed Data**:
+   - Populate Inventory table with products
+   - Create test customer accounts
+
+3. **Test Incident Trigger**:
+   - Click "Trigger Incident" button
+   - Verify v2 deployment occurs
+   - Verify error rate increases
+   - Verify agents execute workflow
+   - Verify rollback occurs
+   - Verify PR is created
+   - Reset to v1 for demo
+
+4. **Prepare Demo Environment**:
+   - Open dashboard in browser
+   - Open CloudWatch console (service map, logs)
+   - Open GitHub repo (for PR)
+   - Open Slack channel (for notifications)
+   - Prepare demo script
+
+### Demo Script (3 minutes)
+
+**[0:00-0:30] Introduction**:
+- "Hi, I'm presenting PagerMind - an autonomous incident response system"
+- "It uses a multi-agent architecture with Amazon Nova 2 Lite"
+- "Let me show you how it detects and fixes a production incident automatically"
+
+**[0:30-1:00] Show Healthy State**:
+- Dashboard shows all services healthy
+- Error rate < 1%, latency ~250ms
+- Agent workflow idle
+
+**[1:00-1:30] Trigger Incident**:
+- Click "Trigger Incident" button
+- "This deploys a broken version with a missing DynamoDB index"
+- Watch error rate spike to 20%
+- Watch latency increase to 5000ms
+
+**[1:30-2:00] Agent Workflow**:
+- Triage Agent detects incident (red indicator)
+- Diagnosis Agent analyzes logs and traces (yellow indicator)
+- "Notice it correlates the deployment with the error spike"
+- Fix Agent validates evidence and executes rollback (blue indicator)
+
+**[2:00-2:30] Recovery**:
+- Watch error rate drop back to <1%
+- Watch latency return to ~250ms
+- Validation Agent marks incident resolved (green indicator)
+
+**[2:30-3:00] Permanent Fix**:
+- Show GitHub PR created by Validation Agent
+- "It analyzed the code diff and generated a fix - adding the missing DynamoDB GSI"
+- Show Slack notifications throughout the workflow
+- "Total time: 8 minutes from incident to resolution"
+
+### Demo Backup Plan
+
+**If live demo fails**:
+- Pre-recorded video showing the same workflow
+- Screenshots of each stage
+- Explain what would have happened
+
+**If dashboard is slow**:
+- Use CloudWatch console directly
+- Show DynamoDB audit log entries
+- Show ECS deployment history
+
+
+## Cost Estimation
+
+### AWS Services (per month, assuming 24/7 operation)
+
+**ECS Fargate**:
+- 3 services × 2 tasks × 0.25 vCPU × 0.5 GB RAM
+- ~$30/month
+
+**DynamoDB**:
+- On-demand pricing
+- Estimated 1M reads, 100K writes per month
+- ~$5/month
+
+**CloudWatch**:
+- Logs: 10 GB ingestion, 7 days retention
+- Metrics: 50 custom metrics
+- ~$10/month
+
+**X-Ray**:
+- 1M traces per month
+- ~$5/month
+
+**Bedrock (Nova 2 Lite)**:
+- Estimated 10 incidents per day
+- ~1000 tokens per incident × 4 agents
+- ~$20/month
+
+**Application Load Balancer**:
+- ~$20/month
+
+**NAT Gateway**:
+- ~$35/month
+
+**S3 + CloudFront** (dashboard hosting):
+- ~$5/month
+
+**Total Estimated Cost**: ~$130/month
+
+**Hackathon Budget**: $100 credits
+- Run for 3 weeks during judging period
+- Estimated cost: ~$100 (within budget)
+
+
+## Future Enhancements (Post-Hackathon)
+
+### Phase 2: Advanced Features
+
+1. **Multi-Service Incident Handling**:
+   - Detect cascading failures across services
+   - Coordinate remediation across multiple services
+   - Blast radius analysis with dependency graph
+
+2. **Human Approval Workflow**:
+   - APPROVAL_REQUIRED actions (database schema changes, config updates)
+   - Slack approval buttons
+   - Timeout and escalation logic
+
+3. **Incident Memory**:
+   - Vector database (OpenSearch) for similar incident search
+   - Learn from past incidents
+   - Suggest fixes based on historical data
+
+4. **Advanced Remediation Actions**:
+   - Auto-scaling (horizontal and vertical)
+   - Configuration rollback
+   - Database query optimization
+   - Circuit breaker activation
+
+5. **Predictive Incident Detection**:
+   - Anomaly detection with ML models
+   - Predict incidents before they occur
+   - Proactive remediation
+
+### Phase 3: Production Readiness
+
+1. **High Availability**:
+   - Multi-region deployment
+   - Failover and disaster recovery
+   - Agent redundancy
+
+2. **Advanced Security**:
+   - RBAC for agent actions
+   - Audit log encryption and signing
+   - Compliance reporting (SOC 2, ISO 27001)
+
+3. **Performance Optimization**:
+   - Agent execution parallelization
+   - Caching for CloudWatch queries
+   - Optimized Nova 2 Lite prompts
+
+4. **Enterprise Features**:
+   - Multi-tenancy support
+   - Custom agent plugins
+   - Integration with ITSM tools (ServiceNow, Jira)
+   - SLA tracking and reporting
+
+
+## Appendix
+
+### Glossary of Terms
+
+- **Agent**: Autonomous AI component that performs a specific task in the incident response workflow
+- **Orchestrator**: Component that coordinates agent execution and manages workflow state
+- **Evidence Criteria**: Specific measurable conditions that must be met before executing a remediation action
+- **Rollback**: Reverting an ECS service to a previous task definition revision
+- **Task Definition**: ECS configuration specifying container image, resources, and environment variables
+- **Audit Log**: Immutable record of all agent decisions and actions
+- **Blast Radius**: Number of services potentially affected by an incident or remediation action
+- **Root Cause Hypothesis**: Diagnosis Agent's explanation of what caused the incident
+- **Temporal Correlation**: Analysis of timing relationships between events (e.g., deployment and error spike)
+
+### References
+
+- [AWS Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore.html)
+- [Amazon Nova 2 Lite Model Card](https://docs.aws.amazon.com/nova/latest/userguide/nova-lite.html)
+- [AWS ECS Fargate Best Practices](https://docs.aws.amazon.com/AmazonECS/latest/bestpracticesguide/)
+- [CloudWatch Logs Insights Query Syntax](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html)
+- [AWS X-Ray Developer Guide](https://docs.aws.amazon.com/xray/latest/devguide/)
+- [DynamoDB Best Practices](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/best-practices.html)
+
+### Contact and Support
+
+- **GitHub Repository**: https://github.com/ritwikareddykancharla/amazon-nova-hackathon
+- **Live Dashboard**: https://dashboard.pagermind.example.com
+- **Demo Video**: https://youtu.be/[video-id]
+- **Blog Post**: https://builder.aws.com/posts/pagermind-autonomous-incident-response
+
+---
+
+**Document Version**: 1.0  
+**Last Updated**: March 11, 2026  
+**Author**: Ritwika Reddy Kancharla  
+**Hackathon**: Amazon Nova AI Hackathon 2026
